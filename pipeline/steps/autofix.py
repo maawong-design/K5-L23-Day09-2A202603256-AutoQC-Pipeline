@@ -27,13 +27,151 @@ Bẫy cần nghĩ tới (có test cho từng cái)
 
 Gợi ý: `yaml.safe_load / safe_dump`.
 """
-from collections import defaultdict  # noqa: F401
+from collections import defaultdict
+from pathlib import Path
 
-import yaml  # noqa: F401
+import yaml
 
-from ..common import ERROR, parse_yolo_line  # noqa: F401
+from ..common import ERROR, parse_yolo_line
+
+
+_DROP_LINE_CODES = {"BAD_FORMAT", "BAD_CLASS_ID", "BOX_ZERO", "DUP_BOX"}
+_REMOVE_IMAGE_CODES = {"LEAK_TEST", "CORRUPT_IMAGE", "BAD_SIZE"}
+
+
+def _format_number(value):
+    """Bước phụ: ghi tọa độ gọn, ổn định, không đổi sang dạng số mũ."""
+    return f"{value:.10f}".rstrip("0").rstrip(".") or "0"
+
+
+def _clipped_line(text):
+    """Bước phụ: cắt các cạnh box vào [0, 1], trả None nếu không còn diện tích."""
+    try:
+        class_id, cx, cy, width, height = parse_yolo_line(text)
+    except (ValueError, OverflowError):
+        return None
+    if width <= 0 or height <= 0:
+        return None
+
+    left = max(0.0, cx - width / 2)
+    top = max(0.0, cy - height / 2)
+    right = min(1.0, cx + width / 2)
+    bottom = min(1.0, cy + height / 2)
+    if right <= left or bottom <= top:
+        return None
+
+    new_cx, new_cy = (left + right) / 2, (top + bottom) / 2
+    new_width, new_height = right - left, bottom - top
+    return " ".join(map(_format_number, (class_id, new_cx, new_cy, new_width, new_height)))
 
 
 def fix(ds, issues, cfg):
-    # TODO
-    raise NotImplementedError("autofix chưa làm")
+    # Bước 1: chỉ nhận lỗi bắt buộc; gom các thao tác xóa ảnh để xử lý trước.
+    errors = [issue for issue in issues if issue.severity == ERROR]
+    remove_stems = {}
+    for issue in errors:
+        if issue.code.startswith("DUP_IMAGE_") or issue.code in _REMOVE_IMAGE_CODES:
+            remove_stems.setdefault(issue.image, issue)
+
+    fixes = []
+    removed = set()
+
+    # Bước 2: xóa ảnh lỗi cùng nhãn của nó, mỗi ảnh chỉ ghi một thay đổi.
+    for stem, issue in remove_stems.items():
+        image_path = ds.image_path(stem)
+        label_path = ds.label_path(stem)
+        if image_path is None and not label_path.exists():
+            continue
+        before = image_path.name if image_path is not None else "(không còn ảnh)"
+        if image_path is not None:
+            image_path.unlink(missing_ok=True)
+        label_path.unlink(missing_ok=True)
+        removed.add(stem)
+        fixes.append({"image": stem, "line": None, "action": "remove_image",
+                      "before": before, "after": "đã xóa ảnh và nhãn"})
+
+    # Bước 3: chuyển các ảnh thiếu nhãn sang người gán, không tự tạo file rỗng.
+    needs_label = set()
+    for issue in errors:
+        if issue.code == "MISSING_LABEL_FILE" and issue.image not in removed:
+            if issue.image not in needs_label:
+                fixes.append({"image": issue.image, "line": None, "action": "needs_label",
+                              "before": "(không có file)", "after": "chuyển người gán"})
+                needs_label.add(issue.image)
+
+    # Bước 4: sửa tên lớp trong data.yaml khi check báo cấu hình tên lớp sai.
+    if any(issue.code == "BAD_CLASS_NAME" and issue.image == "data.yaml" for issue in errors):
+        yaml_path = ds.yaml_path
+        try:
+            original_text = yaml_path.read_text(encoding="utf-8") if yaml_path.exists() else ""
+            data = yaml.safe_load(original_text) or {}
+        except (OSError, yaml.YAMLError):
+            original_text, data = "", {}
+        if not isinstance(data, dict):
+            data = {}
+        expected_names = {i: name for i, name in enumerate(cfg["classes"])}
+        current = data.get("names", {})
+        try:
+            current_names = dict(enumerate(current)) if isinstance(current, list) else {
+                int(key): value for key, value in current.items()
+            }
+        except (AttributeError, TypeError, ValueError):
+            current_names = {}
+        if current_names != expected_names or not yaml_path.exists():
+            data["names"] = expected_names
+            updated_text = yaml.safe_dump(data, allow_unicode=True, sort_keys=False)
+            yaml_path.write_text(updated_text, encoding="utf-8")
+            fixes.append({"image": "data.yaml", "line": None, "action": "rename_classes",
+                          "before": original_text.strip(), "after": updated_text.strip()})
+
+    # Bước 5: gom lỗi theo ảnh và số dòng gốc để tránh lệch chỉ số khi xóa nhiều dòng.
+    line_ops = defaultdict(lambda: defaultdict(set))
+    for issue in errors:
+        if issue.image in removed or issue.line is None:
+            continue
+        if issue.code in _DROP_LINE_CODES or issue.code == "BOX_OUT_OF_IMAGE":
+            line_ops[issue.image][issue.line].add(issue.code)
+
+    # Bước 6: ưu tiên xóa dòng nếu dòng có nhiều lỗi; nếu chỉ tràn thì cắt box.
+    for stem, operations in line_ops.items():
+        label_path = ds.label_path(stem)
+        if stem in removed or not label_path.exists():
+            continue
+        original_text = label_path.read_text(encoding="utf-8", errors="replace")
+        original_lines = original_text.splitlines()
+        trailing_newline = original_text.endswith(("\n", "\r"))
+        updated_lines = []
+        changed = False
+
+        for line_number, text in enumerate(original_lines, 1):
+            codes = operations.get(line_number, set())
+            if codes & _DROP_LINE_CODES:
+                fixes.append({"image": stem, "line": line_number, "action": "drop_line",
+                              "before": text, "after": ""})
+                changed = True
+                continue
+
+            if "BOX_OUT_OF_IMAGE" in codes:
+                clipped = _clipped_line(text)
+                if clipped is None:
+                    fixes.append({"image": stem, "line": line_number, "action": "drop_line",
+                                  "before": text, "after": ""})
+                    changed = True
+                    continue
+                if clipped != text:
+                    fixes.append({"image": stem, "line": line_number, "action": "clip_box",
+                                  "before": text, "after": clipped})
+                    updated_lines.append(clipped)
+                    changed = True
+                    continue
+
+            updated_lines.append(text)
+
+        # Bước 7: ghi một lần cho mỗi file, giữ dấu xuống dòng cuối nếu file vốn có.
+        if changed:
+            updated_text = "\n".join(updated_lines)
+            if trailing_newline and updated_lines:
+                updated_text += "\n"
+            label_path.write_text(updated_text, encoding="utf-8")
+
+    return fixes
