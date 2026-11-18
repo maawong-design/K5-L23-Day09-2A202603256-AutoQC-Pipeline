@@ -1,0 +1,6 @@
+path: .
+names:
+  0: car
+  1: pedestrian
+  2: truck
+  3: bus
