@@ -6,7 +6,9 @@ Pipeline kết luận **Hold**: nhận 202/224 ảnh, loại 22 ảnh hỏng, nh
 ## 2. Lỗi và phân việc
 Vòng 1 có 58 lỗi bắt buộc và 267 cảnh báo. Intake loại 2 ảnh hỏng, 3 ảnh nhỏ, 8 trùng chính xác, 5 ứng viên rò rỉ và 4 gần trùng. Autofix ghi 35 hành động: xóa 20 dòng, cắt 8 box, chuẩn hóa tên lớp 1 lần; 6 ảnh thiếu file nhãn chuyển người gán, không tạo nhãn giả.
 
-Cảnh báo người xử lý: `EMPTY_LABEL` 12 ảnh, `BOX_TINY` 6 dòng/4 ảnh, `BOX_HUGE` 3 dòng, `CLASS_RARE` 4 cờ. Cảnh báo model: `POSSIBLE_MISSING` 152 cờ/86 ảnh, `POSSIBLE_LOOSE_BOX` 44/36, `POSSIBLE_WRONG_CLASS` 21/20, `POSSIBLE_FALSE_POS` 25/24. Hàng đợi xếp theo trọng số và độ tin cậy; ngân sách dùng hết 80/143 ảnh. Trong 80 ảnh có 74 ảnh mang cờ ngữ nghĩa; vòng 2 có 187 cảnh báo (124 thiếu box, 30 lỏng, 21 sai lớp, 12 false positive). Đây là cảnh báo, chưa phải lỗi đã xác nhận.
+Các lỗi nhãn vòng 1: `BAD_CLASS_NAME` 2 cờ/1 `data.yaml`, `BAD_FORMAT` 3 dòng, `BAD_CLASS_ID` 6, `BOX_ZERO` 4, `DUP_BOX` 7, `BOX_OUT_OF_IMAGE` 8. Máy sửa các dòng/box và tên lớp; người xử lý 6 ảnh thiếu nhãn.
+
+Cảnh báo người xử lý: `EMPTY_LABEL` 12 ảnh, `BOX_TINY` 6 dòng/4 ảnh, `BOX_HUGE` 3 dòng, `CLASS_RARE` 4 cờ. Cảnh báo model: `POSSIBLE_MISSING` 152 cờ/86 ảnh, `POSSIBLE_LOOSE_BOX` 44/36, `POSSIBLE_WRONG_CLASS` 21/20, `POSSIBLE_FALSE_POS` 25/24. Hàng đợi xếp theo trọng số và độ tin cậy; ảnh đầu là `img_0160` (35,692), thiếu nhãn ngữ nghĩa và bất đồng lớp. Ngân sách dùng hết 80/143 ảnh. Trong 80 ảnh có 74 ảnh mang cờ ngữ nghĩa; vòng 2 có 187 cảnh báo (124 thiếu box, 30 lỏng, 21 sai lớp, 12 false positive). Đây là cảnh báo, chưa phải lỗi đã xác nhận.
 
 ## 3. Calibration hai ngưỡng
 | Tham số | Mặc định → chọn | Precision / Recall | Đánh đổi |
